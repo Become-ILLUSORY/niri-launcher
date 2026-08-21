@@ -1,24 +1,11 @@
 package dev.niri.launcher.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.*
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
-import androidx.compose.foundation.gestures.rememberTransformableState
-import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.blur
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalConfiguration
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import dev.niri.launcher.model.AppInfo
 import dev.niri.launcher.ui.components.*
 import dev.niri.launcher.ui.theme.*
 import dev.niri.launcher.viewmodel.LauncherViewModel
@@ -39,54 +26,40 @@ fun NiriScaffold(vm: LauncherViewModel = viewModel()) {
 
     val currentColumns = workspaces.getOrNull(currentWs)?.columns ?: emptyList()
     val favApps = allApps.take(7)
-
-    // Overlay visibility (any overlay open = dim the background)
     val anyOverlay = isDrawerOpen || isCCOpen || isNotifOpen || isOverviewOpen
-
-    // ── Vertical drag: workspace switch ──
-    val config = LocalConfiguration.current
-    val dragThreshold = config.screenHeightDp * 0.15f
 
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(NoctBg)
-            .pointerInput(currentWs, anyOverlay) {
-                if (anyOverlay) return@pointerInput
-                var totalDragY = 0f
-                detectVerticalDragGestures(
-                    onDragStart = { totalDragY = 0f },
-                    onDragEnd = {
-                        if (totalDragY > dragThreshold * 2) vm.prevWorkspace()
-                        else if (totalDragY < -dragThreshold * 2) vm.nextWorkspace()
-                    },
-                    onVerticalDrag = { _, dy -> totalDragY += dy },
-                )
-            }
+            .background(NoctBg),
     ) {
         // Main content: columns + dock
         Column(modifier = Modifier.fillMaxSize()) {
-            // Top bar
+            // Top bar — workspace dots are clickable to switch
             TopBar(
                 workspaceCount = workspaces.size,
                 currentWorkspace = currentWs,
+                onWorkspaceClick = { vm.switchWorkspace(it) },
                 onNotificationClick = { vm.openNotifications() },
                 onControlCenterClick = { vm.openControlCenter() },
                 onOverviewClick = { vm.openOverview() },
             )
 
-            // Scrollable columns (takes remaining space)
+            // Scrollable columns
             ScrollableColumns(
                 columns = currentColumns,
                 focusedColumnIndex = focusedCol,
+                totalColumns = currentColumns.size,
                 onColumnFocused = { vm.setFocusedColumn(it) },
-                onAppClick = { vm.launchApp(it) },
+                onAppClick = { app, col ->
+                    vm.launchAppSplit(app, col, currentColumns.size)
+                },
                 modifier = Modifier
                     .weight(1f)
                     .graphicsLayer { alpha = if (anyOverlay) 0.3f else 1f },
             )
 
-            // Dock
+            // Dock — also has workspace switcher
             Dock(
                 favoriteApps = favApps,
                 onAppClick = { vm.launchApp(it) },
@@ -105,7 +78,6 @@ fun NiriScaffold(vm: LauncherViewModel = viewModel()) {
                 onDismiss = { vm.closeDrawer() },
             )
         }
-
         if (isCCOpen) {
             ControlCenter(
                 tiles = tiles,
@@ -115,14 +87,12 @@ fun NiriScaffold(vm: LauncherViewModel = viewModel()) {
                 onDismiss = { vm.closeControlCenter() },
             )
         }
-
         if (isNotifOpen) {
             NotificationCenter(
-                notifications = emptyList(), // TODO: hook NotificationListenerService
+                notifications = emptyList(),
                 onDismiss = { vm.closeNotifications() },
             )
         }
-
         if (isOverviewOpen) {
             WorkspaceOverview(
                 workspaces = workspaces,

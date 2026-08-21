@@ -1,9 +1,15 @@
 package dev.niri.launcher.viewmodel
 
 import android.app.Application
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.drawable.Drawable
+import android.hardware.camera2.CameraManager
+import android.os.Build
+import android.provider.Settings
+import android.app.NotificationManager
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.niri.launcher.model.AppColumn
@@ -25,7 +31,6 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     private val _currentWorkspace = MutableStateFlow(0)
     val currentWorkspace: StateFlow<Int> = _currentWorkspace.asStateFlow()
 
-    // ── Focus (which column is "active") ────────────────
     private val _focusedColumn = MutableStateFlow(0)
     val focusedColumn: StateFlow<Int> = _focusedColumn.asStateFlow()
 
@@ -52,26 +57,47 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     // ── Quick settings ──────────────────────────────────
     private val _quickTiles = MutableStateFlow(
         listOf(
-            QuickTile("Wi-Fi", "wifi", true),
+            QuickTile("Wi-Fi", "wifi", isSystemOn()),
             QuickTile("蓝牙", "bluetooth", false),
             QuickTile("手电筒", "flashlight", false),
-            QuickTile("自动旋转", "screen_rotation", true),
+            QuickTile("自动旋转", "screen_rotation", isRotationOn()),
             QuickTile("飞行模式", "airplanemode", false),
-            QuickTile("勿扰", "do_not_disturb", false),
+            QuickTile("勿扰", "do_not_disturb", isDndOn()),
             QuickTile("热点", "hotspot", false),
             QuickTile("省电", "battery_saver", false),
         )
     )
     val quickTiles: StateFlow<List<QuickTile>> = _quickTiles.asStateFlow()
 
-    // ── Brightness ──────────────────────────────────────
     private val _brightness = MutableStateFlow(0.5f)
     val brightness: StateFlow<Float> = _brightness.asStateFlow()
+
+    // Camera for flashlight
+    private val cameraManager by lazy {
+        getApplication<Application>().getSystemService(Context.CAMERA_SERVICE) as CameraManager
+    }
+    private var torchOn = false
 
     init {
         loadApps()
     }
 
+    // ── System query helpers ────────────────────────────
+    private fun isRotationOn(): Boolean {
+        return try {
+            Settings.System.getInt(getApplication<Application>().contentResolver,
+                Settings.System.ACCELEROMETER_ROTATION) == 1
+        } catch (_: Exception) { true }
+    }
+
+    private fun isDndOn(): Boolean {
+        val nm = getApplication<Application>().getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        return nm.currentInterruptionFilter != NotificationManager.INTERRUPTION_FILTER_ALL
+    }
+
+    private fun isSystemOn(): Boolean = false // Wi-Fi state needs carrier, just default off
+
+    // ── Load apps ───────────────────────────────────────
     private fun loadApps() {
         viewModelScope.launch(Dispatchers.IO) {
             val pm = getApplication<Application>().packageManager
@@ -95,16 +121,15 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
 
             _allApps.value = apps
 
-            // Build default workspace: distribute apps into columns of 2-3
             val columns = mutableListOf<AppColumn>()
             var colId = 0
-            apps.chunked(3).forEach { chunk ->
+            apps.chunked(2).forEach { chunk ->
                 columns.add(AppColumn(id = colId++, apps = chunk))
             }
             _workspaces.value = listOf(
-                Workspace(id = 0, columns = columns.take(8)),
-                Workspace(id = 1, columns = columns.drop(8).take(8)),
-                Workspace(id = 2, columns = columns.drop(16)),
+                Workspace(id = 0, columns = columns.take(6)),
+                Workspace(id = 1, columns = columns.drop(6).take(6)),
+                Workspace(id = 2, columns = columns.drop(12)),
             ).filter { it.columns.isNotEmpty() }
 
             if (_workspaces.value.isEmpty()) {
@@ -113,9 +138,8 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun setFocusedColumn(index: Int) {
-        _focusedColumn.value = index
-    }
+    // ── Workspace navigation ────────────────────────────
+    fun setFocusedColumn(index: Int) { _focusedColumn.value = index }
 
     fun switchWorkspace(index: Int) {
         val ws = _workspaces.value
@@ -126,52 +150,152 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun nextWorkspace() {
-        val ws = _workspaces.value
-        if (_currentWorkspace.value < ws.lastIndex) {
+        if (_currentWorkspace.value < _workspaces.value.lastIndex)
             switchWorkspace(_currentWorkspace.value + 1)
-        }
     }
 
     fun prevWorkspace() {
-        if (_currentWorkspace.value > 0) {
+        if (_currentWorkspace.value > 0)
             switchWorkspace(_currentWorkspace.value - 1)
-        }
     }
 
     // ── Overlay toggles ────────────────────────────────
     fun openDrawer() { _isDrawerOpen.value = true }
     fun closeDrawer() { _isDrawerOpen.value = false }
-    fun toggleDrawer() { _isDrawerOpen.value = !_isDrawerOpen.value }
-
     fun openControlCenter() { _isControlCenterOpen.value = true }
     fun closeControlCenter() { _isControlCenterOpen.value = false }
-
     fun openNotifications() { _isNotificationOpen.value = true }
     fun closeNotifications() { _isNotificationOpen.value = false }
-
     fun openOverview() { _isOverviewOpen.value = true }
     fun closeOverview() { _isOverviewOpen.value = false }
-
     fun updateQuery(text: String) { _queryText.value = text }
 
+    // ── Quick tile: real system actions ─────────────────
     fun toggleQuickTile(index: Int) {
         val tiles = _quickTiles.value.toMutableList()
-        if (index in tiles.indices) {
-            tiles[index] = tiles[index].copy(isActive = !tiles[index].isActive)
-            _quickTiles.value = tiles
+        if (index !in tiles.indices) return
+        val tile = tiles[index]
+
+        when (tile.label) {
+            "手电筒" -> toggleFlashlight()
+            "自动旋转" -> toggleRotation()
+            "勿扰" -> toggleDnd()
+            else -> {} // Other tiles: just toggle visual state for now
         }
+
+        // Re-read actual state after toggle
+        tiles[index] = tile.copy(isActive = when (tile.label) {
+            "手电筒" -> torchOn
+            "自动旋转" -> isRotationOn()
+            "勿扰" -> isDndOn()
+            else -> !tile.isActive
+        })
+        _quickTiles.value = tiles
+    }
+
+    private fun toggleFlashlight() {
+        try {
+            val cameraId = cameraManager.cameraIdList.firstOrNull() ?: return
+            torchOn = !torchOn
+            cameraManager.setTorchMode(cameraId, torchOn)
+        } catch (_: Exception) {}
+    }
+
+    private fun toggleRotation() {
+        try {
+            val current = Settings.System.getInt(
+                getApplication<Application>().contentResolver,
+                Settings.System.ACCELEROMETER_ROTATION
+            )
+            Settings.System.putInt(
+                getApplication<Application>().contentResolver,
+                Settings.System.ACCELEROMETER_ROTATION,
+                if (current == 1) 0 else 1
+            )
+        } catch (_: Exception) {}
+    }
+
+    private fun toggleDnd() {
+        try {
+            val nm = getApplication<Application>()
+                .getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            if (nm.isNotificationPolicyAccessGranted) {
+                nm.setInterruptionFilter(
+                    if (nm.currentInterruptionFilter == NotificationManager.INTERRUPTION_FILTER_ALL)
+                        NotificationManager.INTERRUPTION_FILTER_PRIORITY
+                    else
+                        NotificationManager.INTERRUPTION_FILTER_ALL
+                )
+            }
+        } catch (_: Exception) {}
     }
 
     fun setBrightness(value: Float) {
         _brightness.value = value.coerceIn(0f, 1f)
+        try {
+            Settings.System.putInt(
+                getApplication<Application>().contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS_MODE,
+                0 // manual
+            )
+            Settings.System.putInt(
+                getApplication<Application>().contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS,
+                (value * 255).toInt()
+            )
+        } catch (_: Exception) {}
     }
 
-    fun launchApp(appInfo: AppInfo) {
+    // ── Launch app: freeform half-screen ────────────────
+    fun launchApp(appInfo: AppInfo, columnBounds: android.graphics.Rect? = null) {
         val ctx = getApplication<Application>()
-        val intent = ctx.packageManager.getLaunchIntentForPackage(appInfo.packageName)
-        if (intent != null) {
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val intent = ctx.packageManager.getLaunchIntentForPackage(appInfo.packageName) ?: return
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_MULTIPLE_TASK)
+
+        try {
+            val activityOptions = android.app.ActivityOptions.makeBasic()
+
+            if (columnBounds != null) {
+                // Try freeform mode for half-screen tiling
+                try {
+                    // setLaunchBounds is public API (API 24+)
+                    activityOptions.setLaunchBounds(columnBounds)
+
+                    // setLaunchWindowingMode is hidden — use reflection
+                    val method = activityOptions.javaClass.getDeclaredMethod(
+                        "setLaunchWindowingMode", Int::class.javaPrimitiveType
+                    )
+                    method.isAccessible = true
+                    method.invoke(activityOptions, 5) // WINDOWING_MODE_FREEFORM = 5
+                } catch (_: Exception) {
+                    // Fallback: just launch normally
+                }
+            }
+
+            ctx.startActivity(intent, activityOptions.toBundle())
+        } catch (_: Exception) {
             ctx.startActivity(intent)
         }
+    }
+
+    fun launchAppSplit(appInfo: AppInfo, column: Int, totalColumns: Int) {
+        val ctx = getApplication<Application>()
+        val dm = ctx.resources.displayMetrics
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
+
+        // Reserve 48dp for dock at bottom
+        val dockHeight = (48 * dm.density).toInt()
+        val topBarHeight = (40 * dm.density).toInt()
+
+        // Divide screen into columns
+        val colWidth = screenW / totalColumns.coerceAtLeast(1)
+        val left = colWidth * column
+        val right = left + colWidth
+        val top = topBarHeight
+        val bottom = screenH - dockHeight
+
+        val bounds = android.graphics.Rect(left, top, right, bottom)
+        launchApp(appInfo, bounds)
     }
 }
