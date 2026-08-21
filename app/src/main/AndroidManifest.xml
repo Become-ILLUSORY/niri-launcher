@@ -24,7 +24,7 @@
             android:stateNotNeeded="true"
             android:resumeWhilePausing="true"
             android:screenOrientation="unspecified"
-            android:configChanges="keyboard|keyboardHidden|mnc|colorMode|density|fontScale|fontWeightAdjustment|keyboardAdjusted|layoutDirection|locale|mcc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
+            android:configChanges="keyboard|keyboardHidden|mnc|colorMode|density|fontScale|fontWeightAdjustment|layoutDirection|locale|mcc|navigation|orientation|screenLayout|screenSize|smallestScreenSize|touchscreen|uiMode"
             android:windowSoftInputMode="adjustPan"
             android:theme="@style/Theme.NiriLauncher">
 
