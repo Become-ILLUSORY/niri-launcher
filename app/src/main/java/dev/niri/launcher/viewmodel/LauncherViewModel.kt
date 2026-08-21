@@ -256,17 +256,10 @@ class LauncherViewModel(app: Application) : AndroidViewModel(app) {
             val activityOptions = android.app.ActivityOptions.makeBasic()
 
             if (columnBounds != null) {
-                // Try freeform mode for half-screen tiling
+                // setLaunchBounds is public API (API 24+)
+                // On devices with freeform support, this positions the window in the given rect.
                 try {
-                    // setLaunchBounds is public API (API 24+)
                     activityOptions.setLaunchBounds(columnBounds)
-
-                    // setLaunchWindowingMode is hidden — use reflection
-                    val method = activityOptions.javaClass.getDeclaredMethod(
-                        "setLaunchWindowingMode", Int::class.javaPrimitiveType
-                    )
-                    method.isAccessible = true
-                    method.invoke(activityOptions, 5) // WINDOWING_MODE_FREEFORM = 5
                 } catch (_: Exception) {
                     // Fallback: just launch normally
                 }
